@@ -7,14 +7,19 @@ import com.intuit.benten.common.annotations.ActionHandler;
 import com.intuit.benten.common.formatters.SlackFormatter;
 import com.intuit.benten.common.helpers.BentenMessageHelper;
 import com.intuit.benten.common.nlp.BentenMessage;
-import com.intuit.benten.splunk.SplunkHttpClient;
+import com.intuit.benten.splunk.http.SplunkHttpClient;
 import com.intuit.benten.splunk.exceptions.BentenSplunkException;
 import org.json.JSONException;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -31,8 +36,12 @@ public class SplunkUserLogsActionHandler implements BentenActionHandler {
     private static final Logger logger = LoggerFactory.getLogger(SplunkUserLogsActionHandler.class);
     private static final String GET_URL_FOR_APPLICATION_ID = "http://localhost:8080/get_token?auth_code=";
     private static SlackFormatter slackFormatter = SlackFormatter.create();
+
     @Autowired
-    SplunkHttpClient splunkHttpClient = new SplunkHttpClient();
+    SplunkHttpClient splunkHttpClient;
+
+    @Autowired
+    private RestTemplate restTemplate;
 
     @Override
     public BentenHandlerResponse handle(BentenMessage bentenMessage) {
@@ -45,7 +54,7 @@ public class SplunkUserLogsActionHandler implements BentenActionHandler {
         String applicationId = null;
         try {
             applicationId = getApplicationId(authCode);
-        } catch (IOException e) {
+        } catch (JSONException | IOException e) {
             logger.error(e.getMessage());
         }
 
@@ -67,7 +76,7 @@ public class SplunkUserLogsActionHandler implements BentenActionHandler {
         }
     }
 
-    private BentenSlackResponse generateMeaningfulInfo(ArrayList<HashMap<String, String>> listOfTransactions) {
+    public BentenSlackResponse generateMeaningfulInfo(ArrayList<HashMap<String, String>> listOfTransactions) {
         for (HashMap<String, String> transaction : listOfTransactions) {
             String message = transaction.get("message");
             String messageInfo = buildMessageHelper(transaction, "message", "Message -");
@@ -181,39 +190,56 @@ public class SplunkUserLogsActionHandler implements BentenActionHandler {
         return bentenSlackResponse;
     }
 
-    private String getApplicationId(String authCode) throws IOException {
-        String url = GET_URL_FOR_APPLICATION_ID + authCode;
-        URL obj = new URL(url);
-        String applicationId = "";
-        HttpURLConnection con = (HttpURLConnection) obj.openConnection();
-        con.setRequestMethod("GET");
+    public String getApplicationId(String authCode) throws IOException, JSONException {
+        HttpHeaders requestHeaders = new HttpHeaders();
+        requestHeaders.set("Accept", "application/json");
+        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl("http://localhost").port(8089)
+                .path("/get_token")
+                .queryParam("auth_code", authCode);
+        HttpEntity<?> httpEntity = new HttpEntity<Object>(requestHeaders);
 
-        int responseCode = con.getResponseCode();
-        if (responseCode == HttpURLConnection.HTTP_OK) {
-            BufferedReader in = new BufferedReader(new InputStreamReader(
-                    con.getInputStream()));
-            String inputLine;
-            StringBuilder response = new StringBuilder();
+        String response = restTemplate
+                .exchange(builder.toUriString(),HttpMethod.GET,httpEntity, String.class)
+                .getBody();
 
-            while ((inputLine = in.readLine()) != null) {
-                response.append(inputLine);
-            }
-            in.close();
+        JSONObject jsonObject = new org.json.JSONObject(response);
+        String appId = jsonObject.getString("app_id");
 
-            try {
-                JSONObject jsonObject = new JSONObject(response.toString());
-                applicationId = jsonObject.getString("app_id");
-            } catch (JSONException e) {
-                logger.error(e.getMessage());
-            }
-            logger.debug("Application id : " + applicationId);
-        } else {
-            logger.error("Status code - " + responseCode);
-        }
-        return applicationId;
+        return appId;
+
+        //FALLBACK CODE BELOW
+//        String url = GET_URL_FOR_APPLICATION_ID + authCode;
+//        URL obj = new URL(url);
+//        String applicationId = "";
+//        HttpURLConnection con = (HttpURLConnection) obj.openConnection();
+//        con.setRequestMethod("GET");
+//
+//        int responseCode = con.getResponseCode();
+//        if (responseCode == HttpURLConnection.HTTP_OK) {
+//            BufferedReader in = new BufferedReader(new InputStreamReader(
+//                    con.getInputStream()));
+//            String inputLine;
+//            StringBuilder response = new StringBuilder();
+//
+//            while ((inputLine = in.readLine()) != null) {
+//                response.append(inputLine);
+//            }
+//            in.close();
+//
+//            try {
+//                JSONObject jsonObject = new JSONObject(response.toString());
+//                applicationId = jsonObject.getString("app_id");
+//            } catch (JSONException e) {
+//                logger.error(e.getMessage());
+//            }
+//            logger.debug("Application id : " + applicationId);
+//        } else {
+//            logger.error("Status code - " + responseCode);
+//        }
+//        return applicationId;
     }
 
-    private String buildMessageHelper(HashMap<String, String> transaction, String key, String additionalText) {
+    public String buildMessageHelper(HashMap<String, String> transaction, String key, String additionalText) {
         String message;
         if (transaction.containsKey(key)) {
             message = "*" + additionalText + "*" + " `" + transaction.get(key) + "`\n";
@@ -223,7 +249,7 @@ public class SplunkUserLogsActionHandler implements BentenActionHandler {
         return message;
     }
 
-    private String buildMessageHelper(HashMap<String, String> transaction, String key, String preText, String postText) {
+    public String buildMessageHelper(HashMap<String, String> transaction, String key, String preText, String postText) {
         String message;
         if (transaction.containsKey(key)) {
             message = preText + " `" + transaction.get(key) + "` " + postText + "\n";
